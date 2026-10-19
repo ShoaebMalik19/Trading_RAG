@@ -1,208 +1,120 @@
-# Trading RAG — SMC Assistant
+<div align="center">
 
-A terminal chatbot that answers questions about Smart Money Concepts (SMC) trading
-strategies. It only answers from your own documents — no hallucination, no made-up
-strategies. Everything it knows comes from the `.md` files you put in `/data/strategies/`.
+# Trading RAG · SMC Assistant
 
----
+**A terminal chatbot that answers Smart Money Concepts trading questions strictly from your own strategy notes.**
 
-## Table of Contents
+[![Python](https://img.shields.io/badge/Python_3.10+-1e2a3a?style=for-the-badge&logo=python&logoColor=FFD43B)](https://www.python.org)
+[![LangChain](https://img.shields.io/badge/LangChain-1a2e2a?style=for-the-badge&logo=langchain&logoColor=white)](https://www.langchain.com)
+[![ChromaDB](https://img.shields.io/badge/ChromaDB-1a1a2e?style=for-the-badge&logoColor=white)](https://www.trychroma.com)
+[![Gemini](https://img.shields.io/badge/Gemini_2.5_Flash-1a1f36?style=for-the-badge&logo=googlegemini&logoColor=8E75B2)](https://ai.google.dev)
+[![RAG](https://img.shields.io/badge/RAG-Retrieval_Augmented-111827?style=for-the-badge)](#-how-it-works)
 
-1. [How it works](#how-it-works)
-2. [Prerequisites](#prerequisites)
-3. [What is a virtual environment?](#what-is-a-virtual-environment)
-4. [Setup (step by step)](#setup-step-by-step)
-5. [Running the bot](#running-the-bot)
-6. [Adding your own documents](#adding-your-own-documents)
-7. [Project structure](#project-structure)
-8. [Configuration reference](#configuration-reference)
-9. [Quick command reference](#quick-command-reference)
+</div>
 
 ---
 
-## How it works
+## ✨ Overview
 
-The bot uses a pattern called **RAG (Retrieval-Augmented Generation)**. Instead of
-relying on the AI model's training data, it first searches your own documents for
-relevant content, then passes that content to Gemini to generate a grounded answer.
+Trading RAG is a command-line assistant for **Smart Money Concepts (SMC)**: Break of Structure (BOS), liquidity grabs, Fair Value Gaps (FVGs) and similar ideas. It uses Retrieval-Augmented Generation, so instead of relying on a model's training data it first searches the Markdown files in [`data/strategies/`](data/strategies), then asks Gemini to answer **only** from what it found. If the context isn't enough, it says so instead of guessing.
+
+## 🚀 Features
+
+- **Grounded answers:** a strict system prompt limits Gemini to the retrieved chunks and forbids inventing strategies.
+- **Bring your own knowledge base:** drop `.md` strategy notes into `data/strategies/` and re-ingest. Ships with notes on BOS, FVG and liquidity grabs.
+- **Automatic first-run ingestion:** if no vector store exists, `main.py` builds one before starting the chat.
+- **Local, persistent vector store:** ChromaDB on disk, so ingestion only runs once.
+- **Risk-aware responses:** answers cover which SMC concepts apply, how, and risk considerations such as stop-loss placement.
+- **Configurable models** through environment variables.
+
+## 🧠 How It Works
 
 ```
 You type a question
         │
         ▼
-[Embeddings] — converts your question into a vector (list of numbers)
+[Embeddings]     question → vector (gemini-embedding-001)
         │
         ▼
-[ChromaDB] — searches the vector store for the 4 most similar document chunks
+[ChromaDB]       similarity search → top 4 document chunks
         │
         ▼
-[Prompt builder] — packages the question + retrieved chunks into a prompt
+[Prompt builder] question + retrieved chunks → strict prompt
         │
         ▼
-[Gemini 2.5 Flash] — reads only the retrieved context and writes an answer
+[Gemini 2.5 Flash] answers only from the retrieved context
         │
         ▼
 Answer printed in your terminal
 ```
 
-### The three stages in detail
+1. **Ingestion:** every `.md` file in `data/strategies/` is split into overlapping chunks (600 characters, 80 overlap, split on headings first), embedded with Gemini, and saved to a local ChromaDB store.
+2. **Retrieval:** the question is embedded with the same model and the 4 closest chunks are returned.
+3. **Generation:** those chunks are injected into the prompt, and Gemini writes a short, practical answer.
 
-**Stage 1 — Ingestion** *(runs automatically on first launch)*
+## 🧱 Tech Stack
 
-Every `.md` file in `data/strategies/` is read and split into overlapping 600-token
-chunks. Each chunk is then converted into a vector using `gemini-embedding-001` and
-saved into a local ChromaDB database (`./vectorstore/`). This only happens once —
-subsequent runs load the existing database.
+- **Language:** Python 3.10+
+- **Orchestration:** LangChain (`langchain-community`, `langchain-text-splitters`, `langchain-chroma`)
+- **Vector store:** ChromaDB
+- **LLM & embeddings:** Google GenAI SDK (`gemini-2.5-flash`, `gemini-embedding-001`)
+- **Config:** python-dotenv
 
-**Stage 2 — Retrieval**
+## 🗂️ Project Structure
 
-Your question is embedded with the same model. ChromaDB compares that vector against
-all stored chunk vectors using cosine similarity and returns the 4 best matches.
-These are the chunks the AI will actually read.
-
-**Stage 3 — Generation**
-
-The 4 retrieved chunks are injected into a strict system prompt. Gemini 2.5 Flash
-is told to answer only from those chunks — if the context isn't enough to answer,
-it says so instead of guessing.
-
----
-
-## Prerequisites
-
-Before you start, make sure you have:
-
-- **Python 3.10 or higher** — check with `python --version`
-- **A Google AI Studio API key** — get one free at [aistudio.google.com](https://aistudio.google.com)
-  (sign in → click "Get API key" → create one)
-
----
-
-## What is a virtual environment?
-
-When you install Python packages with `pip install`, they go into your global Python
-installation and are shared across every project on your computer. This causes problems:
-different projects need different versions of the same library, and they end up
-conflicting with each other.
-
-A **virtual environment (venv)** is an isolated copy of Python that belongs only to
-this project. When the venv is active, any `pip install` goes into a folder called
-`venv/` inside your project — not into your global Python. Other projects are
-completely unaffected.
-
-**You should always use a venv for Python projects.** It is the standard practice.
-
----
-
-## Setup (step by step)
-
-### Step 1 — Get the project
-
-```bash
-git clone <repo-url>
-cd test_rag
+```
+.
+├── data/strategies/     # Knowledge base: smc_bos.md, smc_fvg.md, smc_liquidity_grab.md
+├── rag/
+│   ├── config.py        # Loads .env, model names and paths
+│   ├── embeddings.py    # Gemini embeddings wrapped for LangChain
+│   ├── ingest.py        # Load docs → split → embed → save to ChromaDB
+│   ├── retriever.py     # Load the persisted store and return a retriever
+│   └── chat.py          # Retrieve context → build prompt → call Gemini
+├── main.py              # Entry point: ensures the vector store, runs the chat loop
+├── requirements.txt
+└── .env.example
 ```
 
----
+## ⚡ Getting Started
 
-### Step 2 — Create the virtual environment
+### Prerequisites
 
-Run this once inside the project folder. It creates a `venv/` directory:
+- Python 3.10 or higher
+- A Google AI Studio API key ([aistudio.google.com](https://aistudio.google.com))
+
+### Setup
 
 ```bash
+git clone https://github.com/ShoaebMalik19/Trading_RAG.git
+cd Trading_RAG
+
 python -m venv venv
-```
-
-You will not see much output. That is normal — it just created the folder.
-
----
-
-### Step 3 — Activate the virtual environment
-
-You must activate the venv every time you open a new terminal to work on this project.
-
-**Windows (PowerShell):**
-```powershell
+# Windows (PowerShell)
 .\venv\Scripts\Activate.ps1
-```
-
-**Mac / Linux:**
-```bash
+# macOS / Linux
 source venv/bin/activate
-```
 
-After activation, your terminal prompt will change to show `(venv)` at the start:
-
-```
-(venv) PS C:\Users\you\test_rag>
-```
-
-That `(venv)` prefix is your confirmation that the venv is active. If you do not see
-it, the venv is not active and you should run the activate command again.
-
-> To deactivate the venv when you are done, type `deactivate` and press Enter.
-> Your prompt will go back to normal.
-
----
-
-### Step 4 — Install dependencies
-
-With the venv active (you see `(venv)` in the prompt), install all required packages:
-
-```bash
 pip install -r requirements.txt
+cp .env.example .env   # then add your API key
 ```
 
-This installs LangChain, ChromaDB, the Google GenAI SDK, and everything else the
-project needs — all inside `venv/`, not your global Python. This step only needs
-to be done once.
+### Configuration
 
----
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GOOGLE_API_KEY` | *(none)* | **Required.** Google AI Studio key |
+| `EMBEDDING_MODEL` | `models/gemini-embedding-001` | Model used to embed documents and queries |
+| `CHAT_MODEL` | `gemini-2.5-flash` | Gemini model used to generate answers |
+| `VECTORSTORE_DIR` | `./vectorstore` | Where ChromaDB stores the database |
 
-### Step 5 — Add your API key
-
-Create a `.env` file in the project root and replace the placeholder with your
-real Google AI Studio API key:
-
-```
-GOOGLE_API_KEY=your_actual_key_here
-EMBEDDING_MODEL=models/gemini-embedding-001
-CHAT_MODEL=gemini-2.5-flash
-VECTORSTORE_DIR=./vectorstore
-```
-
-Save the file. Do not share this file or commit it to git — it is already listed
-in `.gitignore`.
-
----
-
-## Running the bot
-
-Every time you want to use the bot:
-
-**1. Open a terminal in the project folder**
-
-**2. Activate the venv:**
-
-```powershell
-# Windows
-.\venv\Scripts\Activate.ps1
-```
-```bash
-# Mac / Linux
-source venv/bin/activate
-```
-
-**3. Run:**
+### Run
 
 ```bash
 python main.py
 ```
 
-**What happens on first run:**
-
-The bot detects there is no vector store yet and ingests your documents automatically
-before starting the chat:
+On the first run the bot builds the vector store, then starts the chat:
 
 ```
 === Trading RAG SMC Assistant ===
@@ -210,102 +122,30 @@ before starting the chat:
 [INFO] No vector store found. Running ingestion now...
 [INGEST] Loaded 3 documents from .../data/strategies
 [INGEST] Split into 9 chunks
-[INGEST] Building Chroma store at .../vectorstore
 [INGEST] Vector store built and persisted.
 
 Type your trade idea or question. Type 'exit' to quit.
 
 You: what is a BOS and how do I enter after one?
-
-Bot: A Break of Structure (BOS) confirms a directional shift...
 ```
 
-On all subsequent runs, ingestion is skipped and the chat starts immediately.
+Type `exit` or `quit` to stop.
 
-Type `exit` or `quit` to stop the bot.
+### Add your own documents
 
----
+1. Put a new `.md` file in `data/strategies/`.
+2. Rebuild the vector store:
 
-## Adding your own documents
+   ```bash
+   python -m rag.ingest
+   ```
 
-1. Create a `.md` file with your strategy or notes
-2. Drop it into `data/strategies/`
-3. Re-run ingestion to rebuild the vector store (with venv active):
+3. Run `python main.py` again.
 
-```bash
-python -m rag.ingest
-```
+> This tool is for education and research. It is not financial advice.
 
-4. Run the bot as normal — it will now answer from your new document too
+## 👤 Author
 
----
+**Mohammed Shoaeb Malik** · AI & Full-Stack Developer, Bengaluru
 
-## Project structure
-
-```
-test_rag/
-│
-├── data/
-│   └── strategies/          # Your knowledge base — add .md files here
-│       ├── smc_bos.md
-│       ├── smc_fvg.md
-│       └── smc_liquidity_grab.md
-│
-├── rag/
-│   ├── config.py            # Loads .env, defines model names and paths
-│   ├── embeddings.py        # Wraps the Gemini embedding API for LangChain
-│   ├── ingest.py            # Loads docs → splits → embeds → saves to ChromaDB
-│   ├── retriever.py         # Loads the saved ChromaDB and returns a retriever
-│   └── chat.py              # Retrieves context → builds prompt → calls Gemini
-│
-├── venv/                    # Virtual environment (gitignored, do not commit)
-├── vectorstore/             # ChromaDB vector database (auto-created, gitignored)
-├── main.py                  # Entry point: checks vectorstore, runs chat loop
-├── requirements.txt         # All Python dependencies
-├── .env                     # Your API key (gitignored, do not commit)
-└── .env.example             # Template showing what goes in .env
-```
-
----
-
-## Configuration reference
-
-All settings live in `.env`. The bot works with defaults — the only required field
-is your API key.
-
-| Variable          | Default                       | Description                                                    |
-|-------------------|-------------------------------|----------------------------------------------------------------|
-| `GOOGLE_API_KEY`  | *(none)*                      | **Required.** Your Google AI Studio key.                       |
-| `EMBEDDING_MODEL` | `models/gemini-embedding-001` | Model used to embed documents and queries. Use `models/gemini-embedding-2` for the latest. |
-| `CHAT_MODEL`      | `gemini-2.5-flash`            | Gemini model used to generate answers.                         |
-| `VECTORSTORE_DIR` | `./vectorstore`               | Where ChromaDB saves the vector database on disk.              |
-
----
-
-## Quick command reference
-
-```powershell
-# ─────────────── First-time setup ─────────────
-
-python -m venv venv                   # create the virtual environment
-
-.\venv\Scripts\Activate.ps1           # activate it  
-source venv/bin/activate              # for (Mac/Linux)
-pip install -r requirements.txt       # install all packages into the venv
-
-# ─────────── Every time you use the bot ────────────
-
-.\venv\Scripts\Activate.ps1           # activate the venv first
-python main.py                        # run the bot
-
-# ─────────── After adding new documents ─────────────
-
-.\venv\Scripts\Activate.ps1           # activate 
-python -m rag.ingest                  # rebuild the vector store
-python main.py                        # then run the bot
-
-# ──────────────── When you are done ─────────────────
-deactivate                            # exit the venv
-```
-
-### Task Done! Waiting to recieve Shawarma from you end :)
+[![GitHub](https://img.shields.io/badge/GitHub-ShoaebMalik19-181717?style=for-the-badge&logo=github&logoColor=white)](https://github.com/ShoaebMalik19)
