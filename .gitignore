@@ -11,3 +11,4 @@ Thumbs.db
 
 .cache/
 .streamlit/secrets.toml
+.claude/
