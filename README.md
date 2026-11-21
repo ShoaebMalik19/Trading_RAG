@@ -2,7 +2,9 @@
 
 # Trading RAG · SMC Assistant
 
-**A terminal chatbot that answers Smart Money Concepts trading questions strictly from your own strategy notes.**
+**A RAG assistant (web demo + terminal) that answers Smart Money Concepts trading questions strictly from my own strategy notes, and shows the notes each answer came from.**
+
+**Live demo:** _coming soon, see [Deploy](#-deploy-free)_
 
 [![Python](https://img.shields.io/badge/Python_3.10+-1e2a3a?style=for-the-badge&logo=python&logoColor=FFD43B)](https://www.python.org)
 [![LangChain](https://img.shields.io/badge/LangChain-1a2e2a?style=for-the-badge&logo=langchain&logoColor=white)](https://www.langchain.com)
@@ -16,13 +18,15 @@
 
 ## ✨ Overview
 
-Trading RAG is a command-line assistant for **Smart Money Concepts (SMC)**: Break of Structure (BOS), liquidity grabs, Fair Value Gaps (FVGs) and similar ideas. It uses Retrieval-Augmented Generation, so instead of relying on a model's training data it first searches the Markdown files in [`data/strategies/`](data/strategies), then asks Gemini to answer **only** from what it found. If the context isn't enough, it says so instead of guessing.
+Trading RAG is a web and command-line assistant for **Smart Money Concepts (SMC)**: Break of Structure (BOS), liquidity grabs, Fair Value Gaps (FVGs) and similar ideas. It uses Retrieval-Augmented Generation, so instead of relying on a model's training data it first searches the Markdown files in [`data/strategies/`](data/strategies), then asks Gemini to answer **only** from what it found. If the context isn't enough, it says so instead of guessing.
 
 ## 🚀 Features
 
 - **Grounded answers:** a strict system prompt limits Gemini to the retrieved chunks and forbids inventing strategies.
 - **Bring your own knowledge base:** drop `.md` strategy notes into `data/strategies/` and re-ingest. Ships with notes on BOS, FVG and liquidity grabs.
-- **Automatic first-run ingestion:** if no vector store exists, `main.py` builds one before starting the chat.
+- **Web demo:** dark Streamlit UI that shows the answer plus the source note chunks and their relevance.
+- **Works without a key for retrieval:** local embeddings (FastEmbed), so only the final answer needs Gemini.
+- **Automatic first-run ingestion:** if the vector store is empty, the app builds it on start.
 - **Local, persistent vector store:** ChromaDB on disk, so ingestion only runs once.
 - **Risk-aware responses:** answers cover which SMC concepts apply, how, and risk considerations such as stop-loss placement.
 - **Configurable models** through environment variables.
@@ -33,7 +37,7 @@ Trading RAG is a command-line assistant for **Smart Money Concepts (SMC)**: Brea
 You type a question
         │
         ▼
-[Embeddings]     question → vector (gemini-embedding-001)
+[Embeddings]     question → vector (local bge-small, or Gemini)
         │
         ▼
 [ChromaDB]       similarity search → top 4 document chunks
@@ -45,19 +49,21 @@ You type a question
 [Gemini 2.5 Flash] answers only from the retrieved context
         │
         ▼
-Answer printed in your terminal
+Answer + source notes (web UI or terminal)
 ```
 
-1. **Ingestion:** every `.md` file in `data/strategies/` is split into overlapping chunks (600 characters, 80 overlap, split on headings first), embedded with Gemini, and saved to a local ChromaDB store.
+1. **Ingestion:** every `.md` file in `data/strategies/` is split into overlapping chunks (600 characters, 80 overlap, split on headings first), embedded (locally by default), and saved to a local ChromaDB store.
 2. **Retrieval:** the question is embedded with the same model and the 4 closest chunks are returned.
 3. **Generation:** those chunks are injected into the prompt, and Gemini writes a short, practical answer.
 
 ## 🧱 Tech Stack
 
 - **Language:** Python 3.10+
+- **Web UI:** Streamlit (dark theme)
 - **Orchestration:** LangChain (`langchain-community`, `langchain-text-splitters`, `langchain-chroma`)
 - **Vector store:** ChromaDB
-- **LLM & embeddings:** Google GenAI SDK (`gemini-2.5-flash`, `gemini-embedding-001`)
+- **LLM:** Google GenAI SDK (`gemini-2.5-flash`)
+- **Embeddings:** FastEmbed `BAAI/bge-small-en-v1.5` locally (default) or `gemini-embedding-001`
 - **Config:** python-dotenv
 
 ## 🗂️ Project Structure
@@ -67,80 +73,97 @@ Answer printed in your terminal
 ├── data/strategies/     # Knowledge base: smc_bos.md, smc_fvg.md, smc_liquidity_grab.md
 ├── rag/
 │   ├── config.py        # Loads .env, model names and paths
-│   ├── embeddings.py    # Gemini embeddings wrapped for LangChain
+│   ├── embeddings.py    # Local (FastEmbed) or Gemini embeddings for LangChain
 │   ├── ingest.py        # Load docs → split → embed → save to ChromaDB
 │   ├── retriever.py     # Load the persisted store and return a retriever
 │   └── chat.py          # Retrieve context → build prompt → call Gemini
-├── main.py              # Entry point: ensures the vector store, runs the chat loop
+├── app.py               # Streamlit web demo: answer + source notes
+├── main.py              # Terminal chat
+├── Dockerfile           # Hugging Face Spaces / container deploy
+├── .streamlit/          # Dark theme config
 ├── requirements.txt
 └── .env.example
 ```
 
-## ⚡ Getting Started
+## ⚡ Run Locally
 
-### Prerequisites
-
-- Python 3.10 or higher
-- A Google AI Studio API key ([aistudio.google.com](https://aistudio.google.com))
-
-### Setup
+Requires Python 3.10+ (tested on 3.11).
 
 ```bash
 git clone https://github.com/ShoaebMalik19/Trading_RAG.git
 cd Trading_RAG
-
 python -m venv venv
-# Windows (PowerShell)
-.\venv\Scripts\Activate.ps1
-# macOS / Linux
-source venv/bin/activate
-
+# Windows: .\venv\Scripts\Activate.ps1    macOS/Linux: source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # then add your API key
+cp .env.example .env        # then add GOOGLE_API_KEY (free: https://aistudio.google.com/apikey)
 ```
+
+**Web demo (one command):**
+
+```bash
+streamlit run app.py
+```
+
+It opens http://localhost:8501 and builds the vector store on first start.
+
+**Terminal chat:** `python main.py`, or one-shot: `python main.py "how do I trade a BOS retest?"`
+
+**No key yet?** It still runs. Retrieval uses a small local embedding model (`BAAI/bge-small-en-v1.5` via FastEmbed, CPU only), so you can search the notes and see which chunks match. Only the written Gemini answer needs `GOOGLE_API_KEY`, and the UI says so instead of crashing.
 
 ### Configuration
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `GOOGLE_API_KEY` | *(none)* | **Required.** Google AI Studio key |
-| `EMBEDDING_MODEL` | `models/gemini-embedding-001` | Model used to embed documents and queries |
-| `CHAT_MODEL` | `gemini-2.5-flash` | Gemini model used to generate answers |
+| `GOOGLE_API_KEY` | *(none)* | Gemini key for answers (`GEMINI_API_KEY` also works) |
+| `CHAT_MODEL` | `gemini-2.5-flash` | Model that writes the answers |
+| `EMBEDDING_PROVIDER` | `local` | `local` (FastEmbed, no key) or `gemini` |
+| `LOCAL_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local embedding model |
+| `EMBEDDING_MODEL` | `models/gemini-embedding-001` | Used when `EMBEDDING_PROVIDER=gemini` |
 | `VECTORSTORE_DIR` | `./vectorstore` | Where ChromaDB stores the database |
 
-### Run
+### Add your own notes
 
-```bash
-python main.py
-```
+Put `.md` files in `data/strategies/`, then run `python -m rag.ingest`. It rebuilds the store without duplicating chunks.
 
-On the first run the bot builds the vector store, then starts the chat:
+## 🌐 Deploy (free)
 
-```
-=== Trading RAG SMC Assistant ===
+### Option A: Streamlit Community Cloud (recommended, about 2 minutes)
 
-[INFO] No vector store found. Running ingestion now...
-[INGEST] Loaded 3 documents from .../data/strategies
-[INGEST] Split into 9 chunks
-[INGEST] Vector store built and persisted.
-
-Type your trade idea or question. Type 'exit' to quit.
-
-You: what is a BOS and how do I enter after one?
-```
-
-Type `exit` or `quit` to stop.
-
-### Add your own documents
-
-1. Put a new `.md` file in `data/strategies/`.
-2. Rebuild the vector store:
-
-   ```bash
-   python -m rag.ingest
+1. Push the code to GitHub: `git push -u origin feat/demo` (or merge `feat/demo` into `main` and push).
+2. Open [share.streamlit.io](https://share.streamlit.io), sign in with GitHub, then **Create app → Deploy a public app from GitHub**.
+3. Repository `ShoaebMalik19/Trading_RAG`, branch `main` (or `feat/demo`), main file path `app.py`.
+4. **App URL:** choose a subdomain, for example `trading-rag-smc`.
+5. **Advanced settings:** Python version `3.11`. In **Secrets** paste:
+   ```toml
+   GOOGLE_API_KEY = "your-key-here"
    ```
+6. Click **Deploy**. The link is `https://trading-rag-smc.streamlit.app` (your chosen subdomain).
 
-3. Run `python main.py` again.
+First boot downloads the ~70 MB embedding model and indexes the notes (under a minute). Free apps sleep after a period without visitors and wake on the next visit.
+
+### Option B: Hugging Face Spaces (Docker)
+
+1. Create a Space at [huggingface.co/new-space](https://huggingface.co/new-space): SDK **Docker**, template **Blank**, hardware **CPU basic (free)**.
+2. In the Space: **Settings → Variables and secrets → New secret** named `GOOGLE_API_KEY`.
+3. The Space's `README.md` must start with this header (add it on the branch you push to the Space):
+   ```yaml
+   ---
+   title: Trading RAG SMC Assistant
+   emoji: 📈
+   colorFrom: green
+   colorTo: gray
+   sdk: docker
+   app_port: 7860
+   ---
+   ```
+   Then push:
+   ```bash
+   git remote add space https://huggingface.co/spaces/<hf-username>/trading-rag
+   git push space feat/demo:main
+   ```
+4. The link is `https://huggingface.co/spaces/<hf-username>/trading-rag` (direct app: `https://<hf-username>-trading-rag.hf.space`).
+
+The `Dockerfile` downloads the embedding model and builds the vector store at image build time, so the Space starts fast.
 
 > This tool is for education and research. It is not financial advice.
 
