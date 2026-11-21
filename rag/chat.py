@@ -1,9 +1,9 @@
-import google.genai as genai
-from google.genai import types
+from dataclasses import dataclass, field
+from pathlib import Path
 
-from .config import CHAT_MODEL, GOOGLE_API_KEY
-from .retriever import get_retriever
-
+from .config import CHAT_MODEL, get_api_key
+from .embeddings import MissingAPIKeyError
+from .retriever import retrieve_with_scores
 
 SYSTEM_PROMPT = """You are a professional SMC trading assistant.
 
@@ -31,7 +31,48 @@ Context:
 {context}
 """
 
-_client = genai.Client(api_key=GOOGLE_API_KEY)
+
+@dataclass
+class Source:
+    file: str
+    content: str
+    score: float
+
+    @property
+    def section(self) -> str:
+        """First Markdown heading in the chunk, e.g. 'Entry Rules'."""
+        for line in self.content.splitlines():
+            if line.lstrip().startswith("#"):
+                return line.lstrip("# ").strip()
+        return ""
+
+    @property
+    def title(self) -> str:
+        return self.file.removesuffix(".md").removeprefix("smc_").replace("_", " ").upper()
+
+
+@dataclass
+class RagResult:
+    question: str
+    answer: str | None
+    sources: list[Source] = field(default_factory=list)
+    error: str | None = None
+    missing_key: bool = False
+
+
+_client = None
+
+
+def _get_client():
+    global _client
+    key = get_api_key()
+    if not key:
+        raise MissingAPIKeyError("answer generation")
+    if _client is None:
+        import google.genai as genai
+
+        _client = genai.Client(api_key=key)
+    return _client
 
 
 def _format_context(chunks) -> str:
@@ -45,12 +86,12 @@ def _format_prompt(question: str, context: str) -> str:
 
 
 def _call_llm(question: str, context: str) -> str:
-    response = _client.models.generate_content(
+    from google.genai import types
+
+    response = _get_client().models.generate_content(
         model=CHAT_MODEL,
         contents=_format_prompt(question, context),
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-        ),
+        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
     )
     text = response.text
     if not text:
@@ -58,12 +99,32 @@ def _call_llm(question: str, context: str) -> str:
     return text
 
 
-def _retrieve_context(question: str):
-    retriever = get_retriever(k=4)
-    return retriever.invoke(question)
+def answer_question(question: str, k: int = 4) -> RagResult:
+    """Retrieve notes, then generate a grounded answer. Never raises for a missing key:
+    retrieval still runs and the result says the LLM step needs a key."""
+    hits = retrieve_with_scores(question, k=k)
+    sources = [
+        Source(
+            file=Path(doc.metadata.get("source", "unknown")).name,
+            content=doc.page_content,
+            score=float(score),
+        )
+        for doc, score in hits
+    ]
+    result = RagResult(question=question, answer=None, sources=sources)
+    try:
+        result.answer = _call_llm(question, _format_context([d for d, _ in hits]))
+    except MissingAPIKeyError as exc:
+        result.missing_key = True
+        result.error = str(exc)
+    except Exception as exc:  # surface API errors to the UI instead of crashing
+        result.error = f"Gemini call failed: {exc}"
+    return result
 
 
 def ask_rag(question: str) -> str:
-    chunks = _retrieve_context(question)
-    context = _format_context(chunks)
-    return _call_llm(question, context)
+    """Backwards-compatible helper used by the CLI."""
+    result = answer_question(question)
+    if result.answer is None:
+        raise RuntimeError(result.error)
+    return result.answer
