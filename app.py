@@ -16,7 +16,7 @@ try:
 except Exception:
     pass  # no secrets file locally: fine
 
-from rag.chat import RagResult, retrieve, stream_answer  # noqa: E402
+from rag.chat import GeminiBusyError, RagResult, retrieve, stream_answer  # noqa: E402
 from rag.config import CHAT_MODEL, DATA_DIR, EMBEDDING_PROVIDER, LOCAL_EMBEDDING_MODEL, has_api_key  # noqa: E402
 from rag.embeddings import MissingAPIKeyError  # noqa: E402
 from rag.retriever import get_vectorstore  # noqa: E402
@@ -173,6 +173,8 @@ def render_result(r: RagResult):
         st.markdown(r.answer)
     elif r.missing_key:
         render_keybox()
+    elif r.error and "overloaded" in r.error:
+        md(f'<div class="keybox"><b>⏳ Gemini was busy for this one.</b><br>{html.escape(r.error)}</div>')
     else:
         st.error(r.error)
     render_sources(r.sources)
@@ -234,6 +236,12 @@ if question:
             result.missing_key, result.error = True, str(exc)
             with answer_slot.container():
                 render_keybox()
+        except GeminiBusyError as exc:
+            status.empty()
+            result.error = str(exc)
+            with answer_slot.container():
+                md(f'<div class="keybox"><b>⏳ Gemini is busy right now.</b><br>{html.escape(str(exc))} '
+                   'The notes below are what the answer will be grounded in.</div>')
         except Exception as exc:
             status.empty()
             result.error = f"Gemini call failed: {exc}"

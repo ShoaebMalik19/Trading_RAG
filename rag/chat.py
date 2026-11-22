@@ -92,38 +92,78 @@ def _is_not_found(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 404 or "NOT_FOUND" in str(exc)
 
 
-def _newest_flash(client) -> str | None:
-    """Pick the newest general-purpose Flash model this key can call."""
-    import re
+def _is_busy(exc: Exception) -> bool:
+    return getattr(exc, "code", None) in (429, 500, 503) or any(
+        s in str(exc) for s in ("UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded", "high demand")
+    )
 
-    best, best_ver = None, ()
-    for m in client.models.list():
-        name = (m.name or "").removeprefix("models/")
-        actions = getattr(m, "supported_actions", None) or []
-        if actions and "generateContent" not in actions:
-            continue
-        if not re.fullmatch(r"gemini-\d+(\.\d+)?-flash", name):  # skips lite/image/tts/live/preview variants
-            continue
-        ver = tuple(int(x) for x in re.findall(r"\d+", name))
-        if ver > best_ver:
-            best, best_ver = name, ver
-    return best
+
+class GeminiBusyError(RuntimeError):
+    pass
+
+
+_flash_cache: list[str] | None = None
+
+
+def _flash_models(client) -> list[str]:
+    """General-purpose Flash and Flash-Lite models this key can call, newest first."""
+    global _flash_cache
+    if _flash_cache is None:
+        import re
+
+        found = []
+        try:
+            for m in client.models.list():
+                name = (m.name or "").removeprefix("models/")
+                actions = getattr(m, "supported_actions", None) or []
+                if actions and "generateContent" not in actions:
+                    continue
+                if re.fullmatch(r"gemini-\d+(\.\d+)?-flash(-lite)?", name):  # skips image/tts/live/preview variants
+                    ver = tuple(int(x) for x in re.findall(r"\d+", name))
+                    found.append((ver, "lite" not in name, name))
+        except Exception:
+            pass
+        _flash_cache = [n for _, _, n in sorted(found, reverse=True)]
+    return _flash_cache
 
 
 def _with_model(call):
-    """Run call(model). If the configured model was retired (404), switch to the newest Flash once."""
+    """Run call(client, model) with resilience for a public demo:
+    - transient overload (429/5xx): retry with backoff, then try other Flash models
+    - retired model (404): switch to the newest available Flash model and remember it"""
+    import time
+
     global _model
     client = _get_client()
-    try:
-        return call(client, _model or CHAT_MODEL)
-    except Exception as exc:
-        if not _is_not_found(exc) or _model:
-            raise
-        fallback = _newest_flash(client)
-        if not fallback or fallback == CHAT_MODEL:
-            raise
-        _model = fallback
-        return call(client, _model)
+    first = _model or CHAT_MODEL
+
+    def candidates():
+        yield first
+        for m in _flash_models(client):  # only listed if the first model fails
+            if m != first:
+                yield m
+
+    last_exc = None
+    for i, model in enumerate(candidates()):
+        if i >= 4:
+            break
+        for attempt in range(3 if i == 0 else 1):
+            try:
+                result = call(client, model)
+                if model != first and _is_not_found(last_exc or Exception()):
+                    _model = model  # configured model is retired: stick with the replacement
+                return result
+            except Exception as exc:
+                last_exc = exc
+                if _is_not_found(exc):
+                    break
+                if not _is_busy(exc):
+                    raise
+                if i == 0 and attempt < 2:
+                    time.sleep(1.5 * (attempt + 1))
+    if last_exc is not None and _is_busy(last_exc):
+        raise GeminiBusyError("Gemini is overloaded right now. Please try again in a few seconds.") from last_exc
+    raise last_exc
 
 
 def active_model() -> str:
