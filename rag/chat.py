@@ -74,7 +74,7 @@ def _get_client():
         from google.genai import types
 
         # Fail fast on a stuck request so the fallback models get a chance
-        _client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=30_000))
+        _client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=20_000))
     return _client
 
 
@@ -97,8 +97,12 @@ def _is_not_found(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 404 or "NOT_FOUND" in str(exc)
 
 
+def _is_timeout(exc: Exception) -> bool:
+    return "timed out" in str(exc).lower() or "timeout" in type(exc).__name__.lower()
+
+
 def _is_busy(exc: Exception) -> bool:
-    return getattr(exc, "code", None) in (429, 500, 503) or any(
+    return _is_timeout(exc) or getattr(exc, "code", None) in (429, 500, 503) or any(
         s in str(exc) for s in ("UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded", "high demand")
     )
 
@@ -165,8 +169,8 @@ def _with_model(call):
                 return result
             except Exception as exc:
                 last_exc = exc
-                if _is_not_found(exc):
-                    break
+                if _is_not_found(exc) or _is_timeout(exc):
+                    break  # retired or hanging: go straight to the next model
                 if not _is_busy(exc):
                     raise
                 if model == first and attempt == 0:
