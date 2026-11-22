@@ -74,7 +74,7 @@ def _get_client():
         from google.genai import types
 
         # Fail fast on a stuck request so the fallback models get a chance
-        _client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=20_000))
+        _client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=15_000))
     return _client
 
 
@@ -98,11 +98,14 @@ def _is_not_found(exc: Exception) -> bool:
 
 
 def _is_timeout(exc: Exception) -> bool:
-    return "timed out" in str(exc).lower() or "timeout" in type(exc).__name__.lower()
+    text = str(exc).lower()
+    return ("timed out" in text or "deadline" in text or "timeout" in type(exc).__name__.lower()
+            or getattr(exc, "code", None) == 504)
 
 
 def _is_busy(exc: Exception) -> bool:
-    return _is_timeout(exc) or getattr(exc, "code", None) in (429, 500, 503) or any(
+    code = getattr(exc, "code", None)
+    return _is_timeout(exc) or code == 429 or (isinstance(code, int) and code >= 500) or any(
         s in str(exc) for s in ("UNAVAILABLE", "RESOURCE_EXHAUSTED", "overloaded", "high demand")
     )
 
@@ -165,7 +168,7 @@ def _with_model(call):
                 if model != first and _is_not_found(last_exc or Exception()):
                     _model = model  # configured model is retired: stick with the replacement
                 elif model != first:
-                    _warm, _warm_until = model, time.time() + 600
+                    _warm, _warm_until = model, time.time() + 1800
                 return result
             except Exception as exc:
                 last_exc = exc
