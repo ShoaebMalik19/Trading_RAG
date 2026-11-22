@@ -85,14 +85,59 @@ def _format_prompt(question: str, context: str) -> str:
     return USER_TEMPLATE.format(question=question, context=context)
 
 
+_model: str | None = None  # the model that actually works for this key (resolved lazily)
+
+
+def _is_not_found(exc: Exception) -> bool:
+    return getattr(exc, "code", None) == 404 or "NOT_FOUND" in str(exc)
+
+
+def _newest_flash(client) -> str | None:
+    """Pick the newest general-purpose Flash model this key can call."""
+    import re
+
+    best, best_ver = None, ()
+    for m in client.models.list():
+        name = (m.name or "").removeprefix("models/")
+        actions = getattr(m, "supported_actions", None) or []
+        if actions and "generateContent" not in actions:
+            continue
+        if not re.fullmatch(r"gemini-\d+(\.\d+)?-flash", name):  # skips lite/image/tts/live/preview variants
+            continue
+        ver = tuple(int(x) for x in re.findall(r"\d+", name))
+        if ver > best_ver:
+            best, best_ver = name, ver
+    return best
+
+
+def _with_model(call):
+    """Run call(model). If the configured model was retired (404), switch to the newest Flash once."""
+    global _model
+    client = _get_client()
+    try:
+        return call(client, _model or CHAT_MODEL)
+    except Exception as exc:
+        if not _is_not_found(exc) or _model:
+            raise
+        fallback = _newest_flash(client)
+        if not fallback or fallback == CHAT_MODEL:
+            raise
+        _model = fallback
+        return call(client, _model)
+
+
+def active_model() -> str:
+    return _model or CHAT_MODEL
+
+
 def _call_llm(question: str, context: str) -> str:
     from google.genai import types
 
-    response = _get_client().models.generate_content(
-        model=CHAT_MODEL,
+    response = _with_model(lambda client, model: client.models.generate_content(
+        model=model,
         contents=_format_prompt(question, context),
         config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
-    )
+    ))
     text = response.text
     if not text:
         raise RuntimeError("Gemini response did not include any text output.")
@@ -115,15 +160,24 @@ def stream_answer(question: str, sources: list[Source]):
     Raises MissingAPIKeyError before yielding anything when no key is set."""
     from google.genai import types
 
-    client = _get_client()
+    _get_client()  # raises MissingAPIKeyError up front
     context = "\n\n---\n\n".join(s.content for s in sources) or "No relevant context found in the knowledge base."
 
-    def gen():
-        for chunk in client.models.generate_content_stream(
-            model=CHAT_MODEL,
+    def open_stream(client, model):
+        it = iter(client.models.generate_content_stream(
+            model=model,
             contents=_format_prompt(question, context),
             config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
-        ):
+        ))
+        first = next(it, None)  # surfaces a 404 here, so the fallback can retry
+        return first, it
+
+    def gen():
+        first, it = _with_model(open_stream)
+        for chunk in ([first] if first is not None else []):
+            if chunk.text:
+                yield chunk.text
+        for chunk in it:
             if chunk.text:
                 yield chunk.text
 

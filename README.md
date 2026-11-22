@@ -4,12 +4,12 @@
 
 **A RAG assistant (web demo + terminal) that answers Smart Money Concepts trading questions strictly from my own strategy notes, and shows the notes each answer came from.**
 
-**Live demo:** _coming soon, see [Deploy](#-deploy-free)_
+**Live demo:** [trading-rag-smc.streamlit.app](https://trading-rag-smc.streamlit.app)
 
 [![Python](https://img.shields.io/badge/Python_3.10+-1e2a3a?style=for-the-badge&logo=python&logoColor=FFD43B)](https://www.python.org)
 [![LangChain](https://img.shields.io/badge/LangChain-1a2e2a?style=for-the-badge&logo=langchain&logoColor=white)](https://www.langchain.com)
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-1a1a2e?style=for-the-badge&logoColor=white)](https://www.trychroma.com)
-[![Gemini](https://img.shields.io/badge/Gemini_2.5_Flash-1a1f36?style=for-the-badge&logo=googlegemini&logoColor=8E75B2)](https://ai.google.dev)
+[![Gemini](https://img.shields.io/badge/Gemini_Flash-1a1f36?style=for-the-badge&logo=googlegemini&logoColor=8E75B2)](https://ai.google.dev)
 [![RAG](https://img.shields.io/badge/RAG-Retrieval_Augmented-111827?style=for-the-badge)](#-how-it-works)
 
 </div>
@@ -46,7 +46,7 @@ You type a question
 [Prompt builder] question + retrieved chunks → strict prompt
         │
         ▼
-[Gemini 2.5 Flash] answers only from the retrieved context
+[Gemini Flash] answers only from the retrieved context
         │
         ▼
 Answer + source notes (web UI or terminal)
@@ -62,7 +62,7 @@ Answer + source notes (web UI or terminal)
 - **Web UI:** Streamlit (dark theme)
 - **Orchestration:** LangChain (`langchain-community`, `langchain-text-splitters`, `langchain-chroma`)
 - **Vector store:** ChromaDB
-- **LLM:** Google GenAI SDK (`gemini-2.5-flash`)
+- **LLM:** Google GenAI SDK (`gemini-3.8-flash`)
 - **Embeddings:** FastEmbed `BAAI/bge-small-en-v1.5` locally (default) or `gemini-embedding-001`
 - **Config:** python-dotenv
 
@@ -116,7 +116,7 @@ It opens http://localhost:8501 and builds the vector store on first start.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `GOOGLE_API_KEY` | *(none)* | Gemini key for answers (`GEMINI_API_KEY` also works) |
-| `CHAT_MODEL` | `gemini-2.5-flash` | Model that writes the answers |
+| `CHAT_MODEL` | `gemini-3.8-flash` | Model that writes the answers |
 | `EMBEDDING_PROVIDER` | `local` | `local` (FastEmbed, no key) or `gemini` |
 | `LOCAL_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | Local embedding model |
 | `EMBEDDING_MODEL` | `models/gemini-embedding-001` | Used when `EMBEDDING_PROVIDER=gemini` |
