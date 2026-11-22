@@ -1,9 +1,12 @@
 """Trading RAG web demo.  Run:  streamlit run app.py"""
 
 import html
+import json
 import os
+from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Streamlit Cloud / HF secrets -> env vars, before rag.config reads them
 try:
@@ -13,144 +16,54 @@ try:
 except Exception:
     pass  # no secrets file locally: fine
 
-from rag.chat import answer_question  # noqa: E402
+from rag.chat import RagResult, retrieve, stream_answer  # noqa: E402
 from rag.config import CHAT_MODEL, DATA_DIR, EMBEDDING_PROVIDER, LOCAL_EMBEDDING_MODEL, has_api_key  # noqa: E402
+from rag.embeddings import MissingAPIKeyError  # noqa: E402
 from rag.retriever import get_vectorstore  # noqa: E402
 
-st.set_page_config(page_title="Trading RAG · SMC Assistant", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Trading RAG · SMC Assistant", page_icon="📈", layout="wide",
+                   initial_sidebar_state="collapsed")
 
+UI = Path(__file__).parent / "ui"
+GITHUB = "https://github.com/ShoaebMalik19/Trading_RAG"
 EXAMPLES = [
     "How do I enter after a bullish break of structure?",
     "Where should my stop loss go on a liquidity grab trade?",
     "What makes a fair value gap worth trading?",
     "Price swept equal lows then closed back inside the range. Long?",
 ]
+TONES = {"bos": "var(--up)", "liquidity": "var(--cyan)", "fvg": "var(--amber)"}
 
-CSS = """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap');
-html, body, [class*="css"], .stMarkdown, .stChatMessage { font-family: 'Inter', sans-serif; }
-.block-container { padding-top: 2rem; max-width: 1100px; }
-[data-testid="stSidebar"] { background: #0f1318; border-right: 1px solid #1f262f; }
-.mono { font-family: 'JetBrains Mono', monospace; }
-.hero { border: 1px solid #1f262f; border-radius: 14px; padding: 22px 26px; margin-bottom: 18px;
-  background: radial-gradient(1200px 200px at 0% 0%, rgba(22,199,132,.10), transparent 60%), #10151b; }
-.hero h1 { font-size: 1.9rem; margin: 0 0 6px 0; letter-spacing: -.02em; }
-.hero h1 span { color: #16c784; }
-.hero p { color: #9aa4b2; margin: 0; }
-.tape { display:flex; gap:8px; flex-wrap:wrap; margin-top: 14px; }
-.tag { font-family:'JetBrains Mono',monospace; font-size:.72rem; padding:4px 9px; border-radius:6px;
-  border:1px solid #243040; color:#c9d1d9; background:#0b0f14; }
-.tag.up { color:#16c784; border-color:rgba(22,199,132,.35); }
-.tag.dn { color:#ea3943; border-color:rgba(234,57,67,.35); }
-.tag.am { color:#f0b90b; border-color:rgba(240,185,11,.35); }
-.status { font-family:'JetBrains Mono',monospace; font-size:.8rem; padding:10px 12px; border-radius:8px;
-  border:1px solid #243040; background:#0b0f14; margin-bottom: 8px; }
-.dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:8px; }
-.src { border:1px solid #1f262f; border-left:3px solid #16c784; border-radius:8px; padding:12px 14px;
-  margin:8px 0; background:#0f1419; }
-.src-head { display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:8px; }
-.src-title { font-family:'JetBrains Mono',monospace; font-size:.78rem; color:#16c784; }
-.src-title b { color:#e6e8eb; font-weight:600; }
-.bar { width:90px; height:6px; background:#1d242d; border-radius:4px; overflow:hidden; }
-.bar > i { display:block; height:100%; background:linear-gradient(90deg,#0e8f5f,#16c784); }
-.src-body { color:#b4bdc8; font-size:.86rem; line-height:1.55; }
-.src-h { color:#e6e8eb; font-weight:600; font-size:.8rem; text-transform:uppercase; letter-spacing:.04em; }
-.hero h1, .hero h1 * { color:#e6e8eb !important; }
-.hero h1 span { color:#16c784 !important; }
-.keybox { border:1px solid rgba(240,185,11,.4); background:rgba(240,185,11,.06); border-radius:10px;
-  padding:14px 16px; color:#e8d7a2; font-size:.9rem; }
-.keybox code { color:#f0b90b; }
-.foot { color:#5f6b7a; font-size:.75rem; margin-top: 28px; }
-</style>
-"""
-st.markdown(CSS, unsafe_allow_html=True)
+first_run = not st.session_state.get("booted")
+st.session_state.booted = True
+if "history" not in st.session_state:
+    st.session_state.history = []
 
 
-@st.cache_resource(show_spinner="Indexing strategy notes…")
+@st.cache_resource(show_spinner=False)
 def load_store():
-    db = get_vectorstore()
-    return db._collection.count()
+    return get_vectorstore()._collection.count()
 
 
-def render_sources(sources):
-    if not sources:
-        st.caption("No matching notes found.")
-        return
-    for s in sources:
-        pct = max(0, min(100, round(s.score * 100)))
-        section = f" · {html.escape(s.section)}" if s.section else ""
-        st.markdown(
-            # Single line on purpose: blank lines or indentation would end Streamlit's HTML block
-            '<div class="src"><div class="src-head">'
-            f'<div class="src-title"><b>{html.escape(s.title)}</b>{section} '
-            f'<span style="color:#5f6b7a">({html.escape(s.file)})</span></div>'
-            '<div style="display:flex;align-items:center;gap:8px">'
-            f'<span class="mono" style="font-size:.72rem;color:#9aa4b2">{pct}%</span>'
-            f'<div class="bar"><i style="width:{pct}%"></i></div></div></div>'
-            f'<div class="src-body">{chunk_html(s.content)}</div></div>',
-            unsafe_allow_html=True,
-        )
+@st.cache_data(show_spinner=False)
+def read_ui(name: str) -> str:
+    return (UI / name).read_text(encoding="utf-8")
 
 
-def chunk_html(text: str) -> str:
-    """Note chunk -> compact HTML: sub-headings bold, bullets kept, no blank lines."""
-    out = []
-    for line in text.strip().splitlines():
-        line = line.rstrip()
-        if not line.strip():
-            continue
-        if line.lstrip().startswith("#"):
-            out.append(f'<span class="src-h">{html.escape(line.lstrip("# ").strip())}</span>')
-        else:
-            out.append(html.escape(line).replace(" ", "&nbsp;", len(line) - len(line.lstrip())))
-    return "<br>".join(out)
+def md(s: str):
+    # Collapse to one line: blank lines / indentation would end Streamlit's HTML block
+    st.markdown(" ".join(line.strip() for line in s.splitlines()), unsafe_allow_html=True)
 
 
-def render_result(result):
-    if result.answer:
-        st.markdown(result.answer)
-    elif result.missing_key:
-        st.markdown(
-            """<div class="keybox"><b>Add your Gemini key to get written answers.</b><br>
-            Retrieval worked: the notes below are what the answer would be grounded in.
-            Set <code>GOOGLE_API_KEY</code> in <code>.env</code> (local) or in your host's secrets.
-            Free key: <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a></div>""",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.error(result.error)
-    with st.expander(f"Grounded in {len(result.sources)} note chunks", expanded=not result.answer):
-        render_sources(result.sources)
+def kinetic(text: str, start: int, cls: str = "") -> str:
+    spans = "".join(f'<span class="ch {cls}" style="--i:{start + i}">{html.escape(c)}</span>' for i, c in enumerate(text))
+    return f'<span class="row">{spans}</span>'
 
 
-# ---------- sidebar ----------
-with st.sidebar:
-    st.markdown("### ⚙️ Engine")
-    live = has_api_key()
-    color, label = ("#16c784", "LIVE · Gemini answers") if live else ("#f0b90b", "RETRIEVAL ONLY · no key")
-    st.markdown(f'<div class="status"><span class="dot" style="background:{color}"></span>{label}</div>', unsafe_allow_html=True)
-    embed = LOCAL_EMBEDDING_MODEL if EMBEDDING_PROVIDER == "local" else "gemini-embedding-001"
-    st.markdown(
-        f'<div class="status">LLM&nbsp;&nbsp;&nbsp;{CHAT_MODEL}<br>EMBED&nbsp;{embed}<br>STORE&nbsp;ChromaDB</div>',
-        unsafe_allow_html=True,
-    )
-    k = st.slider("Chunks to retrieve (k)", 2, 8, 4)
-    st.markdown("### 📚 Knowledge base")
-    for f in sorted(DATA_DIR.glob("*.md")):
-        st.markdown(f'<span class="tag">{html.escape(f.name)}</span>', unsafe_allow_html=True)
-    if st.button("Clear chat", use_container_width=True):
-        st.session_state.history = []
-        st.rerun()
-
-# ---------- header ----------
-st.markdown(
-    """<div class="hero"><h1>Trading RAG · <span>SMC Assistant</span></h1>
-    <p>Ask about Smart Money Concepts. Answers come only from my own strategy notes, with the exact sources shown.</p>
-    <div class="tape"><span class="tag up">▲ BOS</span><span class="tag dn">▼ LIQUIDITY GRAB</span>
-    <span class="tag am">◆ FVG</span><span class="tag">LangChain</span><span class="tag">ChromaDB</span><span class="tag">Gemini</span></div></div>""",
-    unsafe_allow_html=True,
-)
+# ---------- styles + motion layer ----------
+st.markdown(f"<style>{read_ui('styles.css')}</style>", unsafe_allow_html=True)
+if first_run:
+    md('<div class="smc-cover"></div>')
 
 try:
     n_chunks = load_store()
@@ -158,21 +71,141 @@ except Exception as exc:
     st.error(f"Could not build the vector store: {exc}")
     st.stop()
 
-if "history" not in st.session_state:
-    st.session_state.history = []
+live = has_api_key()
+notes = sorted(DATA_DIR.glob("*.md"))
+embed_name = LOCAL_EMBEDDING_MODEL.split("/")[-1] if EMBEDDING_PROVIDER == "local" else "gemini-embedding-001"
+dims = 384 if EMBEDDING_PROVIDER == "local" else 3072
+cfg = {"first": first_run, "notes": len(notes), "chunks": n_chunks, "embed": embed_name, "live": live, "llm": CHAT_MODEL}
+components.html(
+    "<script>(function(){var P=window.parent,D=P.document;"
+    f"P.__SMC_CFG={json.dumps(cfg)};"
+    "if(P.__smcFxReady){P.__smcFxEnhance&&P.__smcFxEnhance();return;}"
+    f"var s=D.createElement('script');s.textContent={json.dumps(read_ui('fx.js'))};D.head.appendChild(s);"
+    "})();</script>",
+    height=0,
+)
 
+# ---------- sidebar ----------
+with st.sidebar:
+    st.markdown("### ⚙️ Engine")
+    color, label = ("#00e59b", "LIVE · Gemini answers") if live else ("#ffb020", "RETRIEVAL ONLY · no key")
+    md(f'<div class="status"><span class="dot" style="background:{color}"></span>{label}</div>')
+    md(f'<div class="status">LLM&nbsp;&nbsp;&nbsp;{CHAT_MODEL}<br>EMBED&nbsp;{embed_name}<br>STORE&nbsp;ChromaDB · {n_chunks} chunks</div>')
+    k = st.slider("Chunks to retrieve (k)", 2, 8, 4)
+    st.markdown("### 📚 Knowledge base")
+    md("".join(f'<span class="tag">{html.escape(f.name)}</span>' for f in notes))
+    if st.button("Clear chat", use_container_width=True):
+        st.session_state.history = []
+        st.rerun()
+
+# ---------- hero ----------
+intro = "intro" if first_run else ""
+base = "2.35s" if first_run else "0s"
+md(f"""
+<div class="hero">
+  <div class="eyebrow fade-up" style="--d:{base}"><span class="live"></span><span class="scramble" data-delay="2.4">RETRIEVAL-AUGMENTED · SMART MONEY CONCEPTS</span></div>
+  <div class="title {intro}" role="heading" aria-level="1" style="--d:{base}">{kinetic("Trading RAG", 0)}{kinetic("SMC Assistant", 11, "grad")}</div>
+  <p class="sub fade-up" style="--d:calc({base} + .5s)">Ask about <b>break of structure</b>, <b>liquidity grabs</b> and <b>fair value gaps</b>.
+  Every answer is grounded in my own trading notes, and you see exactly which notes it came from.<span class="caret"></span></p>
+</div>
+""")
+
+tape_items = [("u", "▲ BREAK OF STRUCTURE"), ("d", "▼ LIQUIDITY GRAB"), ("a", "◆ FAIR VALUE GAP"), ("c", "$$$ EQUAL LOWS SWEPT"),
+              ("", "WAIT FOR THE RETEST"), ("u", "RISK 0.5–1% PER TRADE"), ("", "SL BEYOND THE SWEEP WICK"),
+              ("a", "TRADE WITH HTF BIAS"), ("d", "NO FVG TRADES IN CHOP")]
+tape = "".join(f'<span class="{c}">{t}</span><span style="color:#2a333d">/</span>' for c, t in tape_items)
+md(f'<div class="tape fade-up" style="--d:calc({base} + .7s)"><div class="tape-track">{tape}{tape}</div></div>')
+
+status_tile = ('<div class="stat live"><div class="k">ENGINE</div><div class="v">● LIVE</div></div>' if live else
+               '<div class="stat warn"><div class="k">ENGINE</div><div class="v">◐ RETRIEVAL</div></div>')
+delay = 2.6 if first_run else 0
+md(f"""
+<div class="stats fade-up" style="--d:calc({base} + .85s)">
+  <div class="stat" style="--d:0s"><div class="k">STRATEGY NOTES</div><div class="v"><span data-count="{len(notes)}" data-delay="{delay}">{len(notes)}</span></div></div>
+  <div class="stat" style="--d:.6s"><div class="k">INDEXED CHUNKS</div><div class="v"><span data-count="{n_chunks}" data-delay="{delay}">{n_chunks}</span></div></div>
+  <div class="stat" style="--d:1.2s"><div class="k">VECTOR DIMS</div><div class="v"><span data-count="{dims}" data-delay="{delay}">{dims}</span><small>d</small></div></div>
+  {status_tile}
+</div>
+""")
+
+
+# ---------- renderers ----------
+def chunk_html(text: str) -> str:
+    out = []
+    for line in text.strip().splitlines():
+        if not line.strip():
+            continue
+        if line.lstrip().startswith("#"):
+            out.append(f'<span class="src-h">{html.escape(line.lstrip("# ").strip())}</span>')
+        else:
+            out.append(html.escape(line.rstrip()))
+    return "<br>".join(out)
+
+
+def render_sources(sources):
+    if not sources:
+        st.caption("No matching notes found.")
+        return
+    cards = []
+    for i, s in enumerate(sources):
+        pct = max(0, min(100, round(s.score * 100)))
+        tone = next((v for key, v in TONES.items() if key in s.file), "var(--up)")
+        section = f" · {html.escape(s.section)}" if s.section else ""
+        cards.append(
+            f'<div class="src" style="--i:{i};--tone:{tone}"><div class="rank">{i + 1:02d}</div>'
+            f'<div class="src-head"><div class="src-title"><b>{html.escape(s.title)}</b>{section} '
+            f'<span class="f">{html.escape(s.file)}</span></div>'
+            f'<div class="meter">{pct}%<div class="bar"><i style="--w:{pct}%;--i:{i}"></i></div></div></div>'
+            f'<div class="src-body">{chunk_html(s.content)}</div></div>'
+        )
+    md(f'<div class="srcs-h">▍ Grounded in {len(sources)} note chunks</div>' + "".join(cards))
+
+
+def render_keybox():
+    md("""<div class="keybox"><b>⚡ Plug in a Gemini key to get the written answer.</b><br>
+    Retrieval already ran: the notes below are exactly what the answer would be grounded in.
+    Set <code>GOOGLE_API_KEY</code> in <code>.env</code> or your host's secrets.
+    Free key at <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a></div>""")
+
+
+def render_result(r: RagResult):
+    if r.answer:
+        st.markdown(r.answer)
+    elif r.missing_key:
+        render_keybox()
+    else:
+        st.error(r.error)
+    render_sources(r.sources)
+
+
+# ---------- landing ----------
 pending = None
-examples_box = st.empty()
+landing = st.empty()
 if not st.session_state.history:
-    with examples_box.container():
-        st.caption(f"{n_chunks} note chunks indexed. Try one:")
+    with landing.container():
+        md(f'<div class="label fade-up" style="--d:calc({base} + 1s)">01 · Try a setup</div>')
         cols = st.columns(2)
         for i, q in enumerate(EXAMPLES):
-            if cols[i % 2].button(q, key=f"ex{i}", use_container_width=True):
+            if cols[i % 2].button(f"{i + 1:02d}   {q}", key=f"ex{i}", use_container_width=True):
                 pending = q
+        md(f"""
+        <div class="label" style="margin-top:28px">02 · How it works</div>
+        <div class="pipe">
+          <div class="node" style="--n:0"><div class="ic">?</div><div class="t">QUESTION</div><div class="s">your setup</div></div>
+          <div class="wire" style="--n:0"></div>
+          <div class="node" style="--n:1"><div class="ic">∿</div><div class="t">EMBED</div><div class="s">{html.escape(embed_name)}</div></div>
+          <div class="wire" style="--n:1"></div>
+          <div class="node" style="--n:2"><div class="ic">◫</div><div class="t">CHROMADB</div><div class="s">top-k similar notes</div></div>
+          <div class="wire" style="--n:2"></div>
+          <div class="node" style="--n:3"><div class="ic">✦</div><div class="t">GEMINI</div><div class="s">{html.escape(CHAT_MODEL)}</div></div>
+          <div class="wire" style="--n:3"></div>
+          <div class="node" style="--n:4"><div class="ic">▲</div><div class="t">ANSWER</div><div class="s">+ cited sources</div></div>
+        </div>
+        """)
 
+# ---------- chat ----------
 for item in st.session_state.history:
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar="🧑‍💻"):
         st.markdown(item.question)
     with st.chat_message("assistant", avatar="📈"):
         render_result(item)
@@ -180,13 +213,32 @@ for item in st.session_state.history:
 typed = st.chat_input("Describe a setup or ask an SMC question…")
 question = typed or pending
 if question:
-    examples_box.empty()
-    with st.chat_message("user"):
+    landing.empty()
+    with st.chat_message("user", avatar="🧑‍💻"):
         st.markdown(question)
     with st.chat_message("assistant", avatar="📈"):
-        with st.spinner("Searching notes…"):
-            result = answer_question(question, k=k)
-        render_result(result)
+        status = st.empty()
+        with status.container():
+            md(f'<div class="scan"><div>› embedding query with {html.escape(embed_name)}</div>'
+               f'<div>› scanning {n_chunks} chunks in chromadb</div><div>› ranking top {k} by similarity</div></div>')
+        sources = retrieve(question, k=k)
+        result = RagResult(question=question, answer=None, sources=sources)
+        answer_slot = st.empty()
+        render_sources(sources)
+        try:
+            stream = stream_answer(question, sources)
+            status.empty()
+            result.answer = answer_slot.write_stream(stream)
+        except MissingAPIKeyError as exc:
+            status.empty()
+            result.missing_key, result.error = True, str(exc)
+            with answer_slot.container():
+                render_keybox()
+        except Exception as exc:
+            status.empty()
+            result.error = f"Gemini call failed: {exc}"
+            answer_slot.error(result.error)
     st.session_state.history.append(result)
 
-st.markdown('<div class="foot">For education and research. Not financial advice.</div>', unsafe_allow_html=True)
+md(f'<div class="foot">BUILT BY MOHAMMED SHOAEB MALIK · <a href="{GITHUB}" target="_blank">SOURCE ON GITHUB</a> · '
+   'FOR EDUCATION, NOT FINANCIAL ADVICE</div>')

@@ -99,21 +99,44 @@ def _call_llm(question: str, context: str) -> str:
     return text
 
 
-def answer_question(question: str, k: int = 4) -> RagResult:
-    """Retrieve notes, then generate a grounded answer. Never raises for a missing key:
-    retrieval still runs and the result says the LLM step needs a key."""
-    hits = retrieve_with_scores(question, k=k)
-    sources = [
+def retrieve(question: str, k: int = 4) -> list[Source]:
+    return [
         Source(
             file=Path(doc.metadata.get("source", "unknown")).name,
             content=doc.page_content,
             score=float(score),
         )
-        for doc, score in hits
+        for doc, score in retrieve_with_scores(question, k=k)
     ]
+
+
+def stream_answer(question: str, sources: list[Source]):
+    """Yield the Gemini answer in pieces as it is generated.
+    Raises MissingAPIKeyError before yielding anything when no key is set."""
+    from google.genai import types
+
+    client = _get_client()
+    context = "\n\n---\n\n".join(s.content for s in sources) or "No relevant context found in the knowledge base."
+
+    def gen():
+        for chunk in client.models.generate_content_stream(
+            model=CHAT_MODEL,
+            contents=_format_prompt(question, context),
+            config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+        ):
+            if chunk.text:
+                yield chunk.text
+
+    return gen()
+
+
+def answer_question(question: str, k: int = 4) -> RagResult:
+    """Retrieve notes, then generate a grounded answer. Never raises for a missing key:
+    retrieval still runs and the result says the LLM step needs a key."""
+    sources = retrieve(question, k=k)
     result = RagResult(question=question, answer=None, sources=sources)
     try:
-        result.answer = _call_llm(question, _format_context([d for d, _ in hits]))
+        result.answer = _call_llm(question, "\n\n---\n\n".join(s.content for s in sources))
     except MissingAPIKeyError as exc:
         result.missing_key = True
         result.error = str(exc)

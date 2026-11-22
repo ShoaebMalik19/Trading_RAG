@@ -24,7 +24,7 @@ Trading RAG is a web and command-line assistant for **Smart Money Concepts (SMC)
 
 - **Grounded answers:** a strict system prompt limits Gemini to the retrieved chunks and forbids inventing strategies.
 - **Bring your own knowledge base:** drop `.md` strategy notes into `data/strategies/` and re-ingest. Ships with notes on BOS, FVG and liquidity grabs.
-- **Web demo:** dark Streamlit UI that shows the answer plus the source note chunks and their relevance.
+- **Web demo with a motion layer:** a live, simulated candlestick chart in the background that marks its own BOS, liquidity sweeps and FVGs, a boot sequence, kinetic headline, 3D-tilt prompt cards, an animated RAG pipeline, streamed answers and animated source cards with relevance meters.
 - **Works without a key for retrieval:** local embeddings (FastEmbed), so only the final answer needs Gemini.
 - **Automatic first-run ingestion:** if the vector store is empty, the app builds it on start.
 - **Local, persistent vector store:** ChromaDB on disk, so ingestion only runs once.
@@ -78,6 +78,7 @@ Answer + source notes (web UI or terminal)
 │   ├── retriever.py     # Load the persisted store and return a retriever
 │   └── chat.py          # Retrieve context → build prompt → call Gemini
 ├── app.py               # Streamlit web demo: answer + source notes
+├── ui/                  # styles.css + fx.js motion layer (canvas chart, boot, cursor, tilt)
 ├── main.py              # Terminal chat
 ├── Dockerfile           # Hugging Face Spaces / container deploy
 ├── .streamlit/          # Dark theme config
