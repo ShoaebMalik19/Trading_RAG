@@ -71,7 +71,10 @@ def _get_client():
     if _client is None:
         import google.genai as genai
 
-        _client = genai.Client(api_key=key)
+        from google.genai import types
+
+        # Fail fast on a stuck request so the fallback models get a chance
+        _client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=30_000))
     return _client
 
 
@@ -86,6 +89,8 @@ def _format_prompt(question: str, context: str) -> str:
 
 
 _model: str | None = None  # the model that actually works for this key (resolved lazily)
+_warm: str | None = None  # fallback that worked while the primary was overloaded
+_warm_until = 0.0
 
 
 def _is_not_found(exc: Exception) -> bool:
@@ -133,25 +138,30 @@ def _with_model(call):
     - retired model (404): switch to the newest available Flash model and remember it"""
     import time
 
-    global _model
+    global _model, _warm, _warm_until
     client = _get_client()
     first = _model or CHAT_MODEL
 
     def candidates():
+        # While the primary model is overloaded, start with the model that last worked
+        if _warm and time.time() < _warm_until:
+            yield _warm
         yield first
         for m in _flash_models(client):  # only listed if the first model fails
-            if m != first:
+            if m not in (first, _warm):
                 yield m
 
     last_exc = None
     for i, model in enumerate(candidates()):
         if i >= 4:
             break
-        for attempt in range(3 if i == 0 else 1):
+        for attempt in range(2 if model == first else 1):
             try:
                 result = call(client, model)
                 if model != first and _is_not_found(last_exc or Exception()):
                     _model = model  # configured model is retired: stick with the replacement
+                elif model != first:
+                    _warm, _warm_until = model, time.time() + 600
                 return result
             except Exception as exc:
                 last_exc = exc
@@ -159,8 +169,8 @@ def _with_model(call):
                     break
                 if not _is_busy(exc):
                     raise
-                if i == 0 and attempt < 2:
-                    time.sleep(1.5 * (attempt + 1))
+                if model == first and attempt == 0:
+                    time.sleep(1.5)
     if last_exc is not None and _is_busy(last_exc):
         raise GeminiBusyError("Gemini is overloaded right now. Please try again in a few seconds.") from last_exc
     raise last_exc
